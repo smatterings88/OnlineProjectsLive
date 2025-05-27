@@ -10,7 +10,11 @@ const handler: Handler = async (event) => {
   };
 
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers, body: '' };
+    return { 
+      statusCode: 204, 
+      headers, 
+      body: JSON.stringify({}) // Ensure even OPTIONS returns valid JSON
+    };
   }
 
   if (event.httpMethod !== 'POST') {
@@ -18,6 +22,14 @@ const handler: Handler = async (event) => {
       statusCode: 405,
       headers,
       body: JSON.stringify({ error: 'Method not allowed' }),
+    };
+  }
+
+  if (!event.body) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({ error: 'Request body is required' }),
     };
   }
 
@@ -51,7 +63,18 @@ const handler: Handler = async (event) => {
       apiKey: process.env.OPENAI_API_KEY,
     });
 
-    const { messages } = JSON.parse(event.body || '{}');
+    let parsedBody;
+    try {
+      parsedBody = JSON.parse(event.body);
+    } catch (parseError) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'Invalid JSON in request body' }),
+      };
+    }
+
+    const { messages } = parsedBody;
     
     if (!Array.isArray(messages)) {
       console.error('Invalid messages format:', messages);
@@ -97,7 +120,11 @@ const handler: Handler = async (event) => {
     while (runStatus.status === 'queued' || runStatus.status === 'in_progress') {
       if (attempts >= maxAttempts) {
         console.error('Assistant response timeout after', maxAttempts, 'seconds');
-        throw new Error('Assistant response timeout');
+        return {
+          statusCode: 504,
+          headers,
+          body: JSON.stringify({ error: 'Assistant response timeout' }),
+        };
       }
       await new Promise(resolve => setTimeout(resolve, 1000));
       runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
@@ -114,7 +141,11 @@ const handler: Handler = async (event) => {
 
       if (!lastMessage || !lastMessage.content[0]?.text?.value) {
         console.error('No response content from assistant');
-        throw new Error('No response content from assistant');
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'No response content from assistant' }),
+        };
       }
 
       return {
@@ -131,7 +162,11 @@ const handler: Handler = async (event) => {
       };
     } else {
       console.error('Run failed with status:', runStatus.status);
-      throw new Error(`Run failed with status: ${runStatus.status}`);
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ error: `Run failed with status: ${runStatus.status}` }),
+      };
     }
   } catch (error) {
     console.error('Chat function error:', error);
