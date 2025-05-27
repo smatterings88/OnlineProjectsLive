@@ -106,9 +106,50 @@ const handler: Handler = async (event) => {
     });
     console.log('Added message to thread:', threadMessage.id);
 
-    // Run the assistant
+    // Run the assistant with function definitions
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: process.env.OPENAI_ASSISTANT_ID,
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'saveContact',
+          description: 'Save user contact via Netlify function',
+          parameters: {
+            type: 'object',
+            required: ['from_name', 'from_email', 'service_category', 'budget', 'project_details'],
+            properties: {
+              from_name: {
+                type: 'string',
+                description: 'Full name of the user'
+              },
+              from_email: {
+                type: 'string',
+                description: 'User\'s email address'
+              },
+              phone: {
+                type: 'string',
+                description: '(Optional) User\'s phone number'
+              },
+              service_category: {
+                type: 'string',
+                description: 'e.g. \'chat_inquiry\''
+              },
+              budget: {
+                type: 'string',
+                description: 'e.g. \'not_specified\''
+              },
+              project_details: {
+                type: 'string',
+                description: 'Full chat message or project details'
+              },
+              message: {
+                type: 'string',
+                description: '(Optional) Same as project_details'
+              }
+            }
+          }
+        }
+      }]
     });
     console.log('Started run:', run.id);
 
@@ -146,6 +187,26 @@ const handler: Handler = async (event) => {
           headers,
           body: JSON.stringify({ error: 'No response content from assistant' }),
         };
+      }
+
+      // Check if there's a function call
+      if (runStatus.required_action?.type === 'submit_tool_outputs') {
+        const toolCall = runStatus.required_action.submit_tool_outputs.tool_calls[0];
+        
+        if (toolCall.function.name === 'saveContact') {
+          const args = JSON.parse(toolCall.function.arguments);
+          
+          // Call the saveContact function
+          const saveResponse = await fetch('/.netlify/functions/saveContact', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(args)
+          });
+
+          if (!saveResponse.ok) {
+            console.error('Failed to save contact:', await saveResponse.text());
+          }
+        }
       }
 
       return {
