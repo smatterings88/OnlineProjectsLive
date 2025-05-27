@@ -21,6 +21,8 @@ const handler: Handler = async (event) => {
     };
   }
 
+  console.log('Chat payload:', event.body);
+
   try {
     // Check for required environment variables
     if (!process.env.OPENAI_API_KEY) {
@@ -52,6 +54,7 @@ const handler: Handler = async (event) => {
     const { messages } = JSON.parse(event.body || '{}');
     
     if (!Array.isArray(messages)) {
+      console.error('Invalid messages format:', messages);
       return {
         statusCode: 400,
         headers,
@@ -61,6 +64,7 @@ const handler: Handler = async (event) => {
 
     const latestMessage = messages[messages.length - 1];
     if (!latestMessage || !latestMessage.content) {
+      console.error('No message content provided:', latestMessage);
       return {
         statusCode: 400,
         headers,
@@ -92,11 +96,13 @@ const handler: Handler = async (event) => {
 
     while (runStatus.status === 'queued' || runStatus.status === 'in_progress') {
       if (attempts >= maxAttempts) {
+        console.error('Assistant response timeout after', maxAttempts, 'seconds');
         throw new Error('Assistant response timeout');
       }
       await new Promise(resolve => setTimeout(resolve, 1000));
       runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
       attempts++;
+      console.log('Run status check attempt', attempts, ':', runStatus.status);
     }
 
     console.log('Run completed with status:', runStatus.status);
@@ -107,6 +113,7 @@ const handler: Handler = async (event) => {
       const lastMessage = messages.data[0];
 
       if (!lastMessage || !lastMessage.content[0]?.text?.value) {
+        console.error('No response content from assistant');
         throw new Error('No response content from assistant');
       }
 
@@ -123,6 +130,7 @@ const handler: Handler = async (event) => {
         }),
       };
     } else {
+      console.error('Run failed with status:', runStatus.status);
       throw new Error(`Run failed with status: ${runStatus.status}`);
     }
   } catch (error) {
