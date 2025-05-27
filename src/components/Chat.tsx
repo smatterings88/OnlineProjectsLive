@@ -1,179 +1,246 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Loader2 } from 'lucide-react';
-import { marked } from 'marked';
+import { Handler } from '@netlify/functions';
+import OpenAI from 'openai';
 
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-const Chat: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const lastMessageRef = useRef<HTMLDivElement>(null);
-
-  const scrollToBottom = () => {
-    if (lastMessageRef.current) {
-      lastMessageRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-    inputRef.current?.focus();
+const handler: Handler = async (event) => {
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Content-Type': 'application/json',
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  if (event.httpMethod === 'OPTIONS') {
+    return { 
+      statusCode: 204, 
+      headers, 
+      body: JSON.stringify({}) // Ensure even OPTIONS returns valid JSON
+    };
+  }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
+  if (event.httpMethod !== 'POST') {
+    return {
+      statusCode: 405,
+      headers,
+      body: JSON.stringify({ error: 'Method not allowed' }),
+    };
+  }
 
-    setError(null);
-    const userMessage = { role: 'user' as const, content: input };
-    setMessages(prev => [...prev, userMessage]);
-    setInput('');
-    setIsLoading(true);
+  if (!event.body) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({ error: 'Request body is required' }),
+    };
+  }
 
+  console.log('Chat payload:', event.body);
+
+  try {
+    // Check for required environment variables
+    if (!process.env.OPENAI_API_KEY) {
+      console.error('Missing OPENAI_API_KEY environment variable');
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ 
+          error: 'OpenAI API key is not configured. Please check your environment variables.' 
+        }),
+      };
+    }
+
+    if (!process.env.OPENAI_ASSISTANT_ID) {
+      console.error('Missing OPENAI_ASSISTANT_ID environment variable');
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ 
+          error: 'OpenAI Assistant ID is not configured. Please check your environment variables.' 
+        }),
+      };
+    }
+
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+
+    let parsedBody;
     try {
-      const response = await fetch('/.netlify/functions/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, userMessage]
-        })
-      });
-
-      // Check if response is ok before attempting to parse
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      // Get the response text first
-      const responseText = await response.text();
-      
-      // Check if the response is empty
-      if (!responseText) {
-        throw new Error('Empty response from chat function');
-      }
-
-      // Try to parse the response text as JSON
-      let data;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        console.error('JSON parse error:', parseError);
-        throw new Error('Invalid JSON response from server');
-      }
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      if (data.choices?.[0]?.message) {
-        const assistantMessage = {
-          role: 'assistant' as const,
-          content: data.choices[0].message.content
-        };
-        setMessages(prev => [...prev, assistantMessage]);
-      } else {
-        throw new Error('Invalid response format from chat function');
-      }
-    } catch (error) {
-      console.error('Chat error:', error);
-      setError(error instanceof Error ? error.message : 'An unexpected error occurred');
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: 'Sorry, I encountered an error. Please try again later.'
-      }]);
-    } finally {
-      setIsLoading(false);
+      parsedBody = JSON.parse(event.body);
+    } catch (parseError) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'Invalid JSON in request body' }),
+      };
     }
-  };
 
-  return (
-    <div className="flex flex-col h-[500px] bg-white rounded-xl shadow-lg border border-secondary-200">
-      <div className="p-4 border-b border-secondary-200">
-        <h3 className="text-lg font-semibold text-secondary-900">Chat with Us</h3>
-      </div>
-      
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-secondary-50">
-        {error && (
-          <div className="bg-red-50 text-red-700 p-3 rounded-lg border border-red-200">
-            {error}
-          </div>
-        )}
+    const { messages } = parsedBody;
+    
+    if (!Array.isArray(messages)) {
+      console.error('Invalid messages format:', messages);
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'Invalid messages format. Expected an array.' }),
+      };
+    }
+
+    const latestMessage = messages[messages.length - 1];
+    if (!latestMessage || !latestMessage.content) {
+      console.error('No message content provided:', latestMessage);
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: 'No message content provided.' }),
+      };
+    }
+
+    // Create a thread
+    const thread = await openai.beta.threads.create();
+    console.log('Created thread:', thread.id);
+
+    // Add the user's message to the thread
+    const threadMessage = await openai.beta.threads.messages.create(thread.id, {
+      role: 'user',
+      content: latestMessage.content,
+    });
+    console.log('Added message to thread:', threadMessage.id);
+
+    // Run the assistant with function definitions
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id: process.env.OPENAI_ASSISTANT_ID,
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'saveContact',
+          description: 'Save user contact via Netlify function',
+          parameters: {
+            type: 'object',
+            required: ['from_name', 'from_email', 'service_category', 'budget', 'project_details'],
+            properties: {
+              from_name: {
+                type: 'string',
+                description: 'Full name of the user'
+              },
+              from_email: {
+                type: 'string',
+                description: 'User\'s email address'
+              },
+              phone: {
+                type: 'string',
+                description: '(Optional) User\'s phone number'
+              },
+              service_category: {
+                type: 'string',
+                description: 'e.g. \'chat_inquiry\''
+              },
+              budget: {
+                type: 'string',
+                description: 'e.g. \'not_specified\''
+              },
+              project_details: {
+                type: 'string',
+                description: 'Full chat message or project details'
+              },
+              message: {
+                type: 'string',
+                description: '(Optional) Same as project_details'
+              }
+            }
+          }
+        }
+      }]
+    });
+    console.log('Started run:', run.id);
+
+    // Wait for the run to complete
+    let runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+    let attempts = 0;
+    const maxAttempts = 30; // Maximum 30 seconds wait
+
+    while (runStatus.status === 'queued' || runStatus.status === 'in_progress') {
+      if (attempts >= maxAttempts) {
+        console.error('Assistant response timeout after', maxAttempts, 'seconds');
+        return {
+          statusCode: 504,
+          headers,
+          body: JSON.stringify({ error: 'Assistant response timeout' }),
+        };
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+      attempts++;
+      console.log('Run status check attempt', attempts, ':', runStatus.status);
+    }
+
+    console.log('Run completed with status:', runStatus.status);
+
+    if (runStatus.status === 'completed') {
+      // Get the assistant's response
+      const messages = await openai.beta.threads.messages.list(thread.id);
+      const lastMessage = messages.data[0];
+
+      if (!lastMessage || !lastMessage.content[0]?.text?.value) {
+        console.error('No response content from assistant');
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'No response content from assistant' }),
+        };
+      }
+
+      // Check if there's a function call
+      if (runStatus.required_action?.type === 'submit_tool_outputs') {
+        const toolCall = runStatus.required_action.submit_tool_outputs.tool_calls[0];
         
-        {messages.length === 0 && !error && (
-          <div className="text-center text-secondary-500 py-4">
-            Send a message to start the conversation
-          </div>
-        )}
-        
-        {messages.map((message, index) => (
-          <div
-            key={index}
-            ref={index === messages.length - 1 ? lastMessageRef : null}
-            className={`flex ${
-              message.role === 'user' ? 'justify-end' : 'justify-start'
-            }`}
-          >
-            <div
-              className={`max-w-[80%] rounded-lg p-3 ${
-                message.role === 'user'
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-white text-secondary-900 shadow-sm border border-secondary-200'
-              }`}
-            >
-              {message.role === 'assistant' ? (
-                <div 
-                  className="prose prose-sm max-w-none prose-headings:text-secondary-900 prose-p:text-secondary-800 prose-a:text-primary-600"
-                  dangerouslySetInnerHTML={{ 
-                    __html: marked(message.content, { breaks: true }) 
-                  }} 
-                />
-              ) : (
-                message.content
-              )}
-            </div>
-          </div>
-        ))}
-        
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-white rounded-lg p-3 shadow-sm border border-secondary-200">
-              <Loader2 className="w-5 h-5 animate-spin text-secondary-600" />
-            </div>
-          </div>
-        )}
-        
-        <div ref={messagesEndRef} />
-      </div>
-      
-      <form onSubmit={handleSubmit} className="p-4 border-t border-secondary-200 bg-white">
-        <div className="flex space-x-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Type your message..."
-            className="flex-1 input-field bg-secondary-50"
-            disabled={isLoading}
-          />
-          <button
-            type="submit"
-            disabled={isLoading || !input.trim()}
-            className="btn btn-primary !py-2"
-          >
-            <Send size={20} />
-          </button>
-        </div>
-      </form>
-    </div>
-  );
+        if (toolCall.function.name === 'saveContact') {
+          const args = JSON.parse(toolCall.function.arguments);
+          
+          // Call the saveContact function
+          const saveResponse = await fetch('/.netlify/functions/saveContact', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(args)
+          });
+
+          if (!saveResponse.ok) {
+            console.error('Failed to save contact:', await saveResponse.text());
+          }
+        }
+      }
+
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: lastMessage.content[0].text.value
+            }
+          }]
+        }),
+      };
+    } else {
+      console.error('Run failed with status:', runStatus.status);
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ error: `Run failed with status: ${runStatus.status}` }),
+      };
+    }
+  } catch (error) {
+    console.error('Chat function error:', error);
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({
+        error: error instanceof Error 
+          ? `Error processing chat request: ${error.message}` 
+          : 'An unexpected error occurred while processing the chat request'
+      }),
+    };
+  }
 };
 
-export default Chat;
+export { handler };
