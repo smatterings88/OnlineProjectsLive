@@ -38,7 +38,7 @@ const Chat: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/.netlify/functions/chat', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -46,13 +46,28 @@ const Chat: React.FC = () => {
         })
       });
 
-      const data = await response.json();
-
+      // Check if response is ok before attempting to parse
       if (!response.ok) {
-        console.error('Function error:', data);
-        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
+
+      // Get the response text first
+      const responseText = await response.text();
       
+      // Check if the response is empty
+      if (!responseText) {
+        throw new Error('Empty response from chat function');
+      }
+
+      // Try to parse the response text as JSON
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('JSON parse error:', parseError);
+        throw new Error('Invalid JSON response from server');
+      }
+
       if (data.error) {
         throw new Error(data.error);
       }
