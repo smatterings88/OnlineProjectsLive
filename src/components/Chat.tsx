@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import OpenAI from 'openai';
 import { Send, Loader2 } from 'lucide-react';
 import { marked } from 'marked';
 
@@ -47,11 +46,12 @@ const Chat: React.FC = () => {
         })
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
       const data = await response.json();
+
+      if (!response.ok) {
+        console.error('Function error:', data);
+        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+      }
       
       if (data.error) {
         throw new Error(data.error);
@@ -63,9 +63,11 @@ const Chat: React.FC = () => {
           content: data.choices[0].message.content
         };
         setMessages(prev => [...prev, assistantMessage]);
+      } else {
+        throw new Error('Invalid response format from chat function');
       }
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Chat error:', error);
       setError(error instanceof Error ? error.message : 'An unexpected error occurred');
       setMessages(prev => [...prev, {
         role: 'assistant',
